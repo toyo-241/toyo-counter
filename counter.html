@@ -14504,15 +14504,15 @@ window.ToyoQrDecoder = (() => {
       const {$, $$, escapeHtml, showToast} = api;
 
       const scanner = {
-        stream:null,
-        video:null,
-        canvas:null,
-        context:null,
-        timer:null,
-        active:false,
-        decoded:null
-      };
-
+  stream:null,
+  video:null,
+  canvas:null,
+  context:null,
+  timer:null,
+  active:false,
+  decoded:null,
+  barcodeDetector:null
+};
       insertTypeButton();
       insertScannerView();
       insertPreviewModal();
@@ -14895,45 +14895,129 @@ window.ToyoQrDecoder = (() => {
         $("stopScanBtn")?.classList.add("hidden");
       }
 
-      function scanLoop(){
-        if(!scanner.active) return;
+     async function scanLoop(){
+  if(!scanner.active) return;
 
-        const video = scanner.video;
+  const video = scanner.video;
 
-        if(video.readyState !== video.HAVE_ENOUGH_DATA){
-          scanner.timer = setTimeout(scanLoop, 120);
-          return;
+  if(
+    !video ||
+    video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
+    !video.videoWidth ||
+    !video.videoHeight
+  ){
+    scanner.timer = setTimeout(scanLoop, 150);
+    return;
+  }
+
+  const maxWidth = 960;
+  const scale = Math.min(1, maxWidth / video.videoWidth);
+  const width = Math.max(
+    1,
+    Math.round(video.videoWidth * scale)
+  );
+  const height = Math.max(
+    1,
+    Math.round(video.videoHeight * scale)
+  );
+
+  if(
+    scanner.canvas.width !== width ||
+    scanner.canvas.height !== height
+  ){
+    scanner.canvas.width = width;
+    scanner.canvas.height = height;
+  }
+
+  scanner.context.drawImage(
+    video,
+    0,
+    0,
+    width,
+    height
+  );
+
+  try{
+    if("BarcodeDetector" in window){
+      if(!scanner.barcodeDetector){
+        const formats =
+          typeof BarcodeDetector.getSupportedFormats === "function"
+            ? await BarcodeDetector.getSupportedFormats()
+            : ["qr_code"];
+
+        if(!formats.includes("qr_code")){
+          throw new Error("QR_CODE_NOT_SUPPORTED");
         }
 
-        const maxWidth = 640;
-        const scale = Math.min(1, maxWidth / video.videoWidth);
-        const width = Math.round(video.videoWidth * scale);
-        const height = Math.round(video.videoHeight * scale);
-
-        if(scanner.canvas.width !== width){
-          scanner.canvas.width = width;
-          scanner.canvas.height = height;
-        }
-
-        scanner.context.drawImage(video, 0, 0, width, height);
-
-        let result = null;
-
-        try{
-          const imageData = scanner.context.getImageData(0, 0, width, height);
-          result = window.ToyoQrDecoder.decodeImageData(imageData);
-        }catch(error){
-          result = null;
-        }
-
-        if(result?.text){
-          handleDecoded(result.text);
-          return;
-        }
-
-        scanner.timer = setTimeout(scanLoop, 110);
+        scanner.barcodeDetector = new BarcodeDetector({
+          formats:["qr_code"]
+        });
       }
 
+      const barcodes =
+        await scanner.barcodeDetector.detect(
+          scanner.canvas
+        );
+
+      const text = barcodes
+        .map(item => item.rawValue || "")
+        .find(Boolean);
+
+      if(text){
+        handleDecoded(text);
+        return;
+      }
+    }else{
+      const imageData =
+        scanner.context.getImageData(
+          0,
+          0,
+          width,
+          height
+        );
+
+      const result =
+        window.ToyoQrDecoder.decodeImageData(
+          imageData
+        );
+
+      if(result?.text){
+        handleDecoded(result.text);
+        return;
+      }
+    }
+  }catch(error){
+    console.error(
+      "QR読取エラー:",
+      error
+    );
+
+    if(error.message === "QR_CODE_NOT_SUPPORTED"){
+      showMessage(
+        "error",
+        "このブラウザはQRコードの標準読取に対応していません。",
+        [
+          "別のブラウザで開くか、手入力してください。"
+        ]
+      );
+
+      stopScanner();
+      setStatus(
+        "QRコードを読み取れません。"
+      );
+      return;
+    }
+
+    setStatus(
+      "QRコードを検出できません。距離や角度を調整してください。"
+    );
+  }
+
+  scanner.timer = setTimeout(
+    scanLoop,
+    180
+  );
+}
       /* ---------- 読取結果の検証 ---------- */
 
       function handleDecoded(text){
